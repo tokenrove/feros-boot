@@ -1,0 +1,23 @@
+
+NOTES ON STYLE
+
+< darkstar:/tmp> ls
+> foo.c    foo.o    foo
+< darkstar:/tmp> ls -l
+> foo.c    foo.o    foo
+> tesh: -l not found
+< darkstar:/tmp> ls(-l)
+> foo.c		4177	12/22/01 14h35
+> foo.o	       11234	12/22/01 14h42
+> foo	       12062	12/22/01 14h42
+< darkstar:/tmp> ls(-lh,foo.c)
+> foo.c           4k    12/22/01 14h35
+< darkstar:/tmp> cd(/music) bg(mpg123(-zq, find(., name: *.mp3))) \\
+<                cd(/projects/feros)
+> tesh: background [1]: mpg123
+< darkstar:/projects/feros> j = jobs
+< darkstar:/projects/feros> j
+> jobs: running [1]: mpg123
+< darkstar:/projects/feros>
+
+ kill(-9, ps(auxwww) grep(luser) cut(-f,2))
