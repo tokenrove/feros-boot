@@ -2,6 +2,8 @@
 NASM=nasm
 AS=$(NASM)
 ASFLAGS=-felf
+LD=i386-elf-ld
+LDFLAGS=-Ttext 0x100000 --oformat binary
 
 .phony: default
 
@@ -16,11 +18,8 @@ stage-a.bin: stage-a.s
 stage-b.bin: stage-b.s
 	$(NASM) -fbin stage-b.s -o stage-b.bin
 
-kernel: entry.s
-	$(NASM) -fbin entry.s -o kernel
-
-#kernel: entry.o
-#	ld $^ -o $@ -Ttext 0x100000
+kernel: entry.o
+	$(LD) $(LDFLAGS) $^ -o $@
 
 clean:
 	$(RM) *.o stage-a.bin stage-b.bin

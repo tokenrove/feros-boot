@@ -7,8 +7,8 @@
 ;
 
 	org 0x8000
-	bits 16
 	section .text
+	bits 16
 
 	; Entry point from stage A loader
 entry:
@@ -19,6 +19,10 @@ entry:
 	mov [drivenum], dl
 	mov [drivecurcx], cx
 	mov [drivecurhead], dh
+	; enable A20 (heck, why not do it now?)
+	cli
+	call enablea20
+	sti
 
 	;
 	; provide boot prompt
@@ -74,113 +78,132 @@ loadkernel:
 	; get drive parameters
 	call getdriveparams
 
-	; setup the copy GDT
-	mov si, gdt
-	mov di, si
+	; where we'll be copying things
+	mov eax, 0x100000
+	mov [kernloadpos], eax
 
-	; skip the first sixteen bytes
-	mov ax, 0
-	mov cx, 8
-	rep stosw
-
-	; source
-	mov ax, workspacelen
-	dec ax
-	stosw
-	mov ax, workspace
-	stosw
-	mov al, 0
-	stosb
-	mov al, 0x93		; present = 1, privlevel = 0, type = 3
-	stosb
-	mov ax, 0
-	stosw
-
-	; destination
-	mov ax, workspacelen
-	dec ax
-	stosw
-	mov ax, 0
-	stosw
-	mov al, 0x10		; 0x100000 is where we start
-	stosb
-	mov al, 0x93		; present, privlevel 0, dataseg, writable
-	stosb
-	mov ax, 0
-	stosw
-
-	mov ax, 0
-	mov cx, 8
-	rep stosw
-
-	; setup the block buffer
-	mov di, workspace
-
-	; read the first block
-	call loadblock
-	;; check ELF header
-	;; determine how many blocks we need to copy
-	;; copy remainder of first block
-	call copyhigh
-
-	;; loop
-;	mov cx, 1
-;.copyloop:
-;	call loadblock
-;	call copyhigh
-;	loop .copyloop
+	mov ax, 0xb800
+	mov gs, ax
 
 	; disable interrupts
 	cli
 
-	mov ax, 0xb800
-	mov gs, ax
-	mov [gs:0], byte '*'
+	; save our segment registers
+	mov ax, 0
+	mov ds, ax
+	mov es, ax
+
+	push ds
+	push es
 
 	; build the GDT
+	mov ax, 0
+	mov es, ax
 	mov di, gdt
 	; null descriptor
-	mov ax, 15
+	mov ax, 23		; 8*(number of entries)-1
 	stosw
-	mov ax, gdt
-	stosw
+	mov eax, gdt
+	stosd
 	mov ax, 0
-	stosw
 	stosw
 	; linear map (flat real mode)
 	mov ax, 0xffff
 	stosw
 	mov ax, 0
 	stosw
-	mov ax, 0x9200
+	mov al, 0
+	stosb
+	mov al, 0x92
+	stosb
+	mov al, 0xcf
+	stosb
+	mov al, 0x00
+	stosb
+	; code
+	mov ax, 0xffff
 	stosw
-	mov ax, 0x00cf
+	mov ax, 0
 	stosw
+	mov al, 0
+	stosb
+	mov al, 0x9a
+	stosb
+	mov al, 0xcf
+	stosb
+	mov al, 0x00
+	stosb
 
-	o32 lgdt [gdt]
+	lgdt [gdt]
 
-	mov [gs:2], byte '|'
-
-	; move to pmode
 	mov eax, cr0
-	or eax, 1
-	jmp .next		; clear the prefetch queue with a jump
-.next:
+	or eax, 1		; enable PE
+	mov cr0, eax
+	; set our selectors to the linear map
 	mov cx, 8
 	mov ds, cx
 	mov es, cx
 
-	mov [gs:4], byte '?'
+	; move to ``unreal'' mode
+	dec eax
+	mov cr0, eax
 
-	; enable A20
-	call enablea20
+	pop es
+	pop ds
 
-	; reroute irqs
+	; setup the block buffer
+	mov di, workspace
 
-	mov [gs:6], byte '+'
+	sti
 
-	jmp 0x100000		; jump into the kernel
+	; load the kernel into 0x100000
+	mov cx, 1
+.copyloop:
+	call loadblock
+	call copyhigh
+	loop .copyloop
+
+	; now, let's go back to pmode
+	cli
+	lgdt [gdt]
+	mov eax, cr0
+	or eax, 1		; enable PE
+	mov cr0, eax
+	jmp 0x10:lkern32	; flush prefetch cache
+
+	bits 32
+lkern32:
+
+;	mov [gs:2], byte 'b'
+	;; update our selectors
+	mov ax, 8
+	mov ds, ax
+	mov ss, ax
+	mov es, ax
+
+	mov [dword es:0xb8000], byte 'c'
+
+	mov [gs:0x6C], byte 'j'
+	mov [gs:0x6E], byte 'u'
+	mov [gs:0x70], byte 'm'
+	mov [gs:0x72], byte 'p'
+	mov [gs:0x74], byte '?'
+
+	mov al, [dword ds:0x100000]
+	mov [gs:0x76], al
+	mov al, [dword ds:0x100001]
+	mov [gs:0x78], al
+	mov al, [dword ds:0x100002]
+	mov [gs:0x7A], al
+	mov al, [dword ds:0x100003]
+	mov [gs:0x7C], al
+	mov al, [dword ds:0x100004]
+	mov [gs:0x7E], al
+
+	mov [gs:0x74], byte '!'
+	jmp dword 0x10:0x100000	; jump into the kernel
 	; end loadkernel
+	bits 16
 
 
 	
@@ -224,11 +247,36 @@ loadblock:
 	pop dx
 	pop cx
 	pop bx
-	pop ax	
+	pop ax
 	ret
 .str_fail: db 'loadblock failed',0xd,0xa,0
 	; end loadblock
-	
+
+
+	;
+	; copyhigh - loads the workspace block into high memory
+	; Note:	expects to be in unreal mode
+	;
+copyhigh:
+	mov [gs:0x19A], byte 'p'
+
+	mov cx, workspacelen
+	shr cx, 1
+	mov esi, workspace
+	mov edi, 0x100000
+	rep a32 movsw
+
+	mov [gs:0x230], al
+	mov [gs:0x232], ah
+	mov ax, [dword ds:0x100000]
+	mov [gs:0x234], al
+	mov [gs:0x236], ah
+
+	mov [gs:0x19C], byte 'q'
+	ret
+	; end copyhigh	
+
+
 
 	;
 	; getdriveparams - fills the drivemaxcx and drivemaxhead
@@ -254,54 +302,6 @@ getdriveparams:
 .str_fail: db 'The BIOS bites! You die... --More--',0xd,0xa,0
 	; end getdriveparams
 
-
-
-	;
-	; copyhigh - loads the workspace block into high memory using
-	;            int 15h
-	;
-copyhigh:
-	push ax
-	push cx
-	push si
-	push es
-
-	mov ax, 0
-	mov es, ax
-	mov si, gdt
-	mov ah, 0x87
-	mov cx, workspacelen
-	shr cx, 1
-	int 0x15
-
-	call printword
-	xor ax, ax
-	int 0x16
-
-	jc .fail
-
-	mov di, gdt+0x1a
-	mov si, di
-	lodsw
-	mov cl, [gdt+0x1c]
-	add ax, workspacelen
-	adc cl, 0
-	stosw
-	mov al, cl
-	stosb
-	jmp .end
-
-.fail:	mov si, .str_elbereth
-	call printstr
-
-.end:
-	pop es
-	pop si
-	pop cx
-	pop ax
-	ret
-.str_elbereth: db 'You can',0x27,'t seem to think straight...',0xd,0xa,0
-	; end copyhigh
 
 
 	;
@@ -459,9 +459,46 @@ tokencmp:
 	
 	; 
 	; enablea20 - set A20 gate on
-	; Destroys: AX
+	; tries several methods, starting with BIOS int 15h/2401h
 	;
 enablea20:
+	call testa20		; maybe it's already on?
+	jnz .success
+
+	call enablea20_bios
+	call testa20
+	jnz .success
+
+	call enablea20_kbc
+	call testa20
+	jnz .success
+
+	; XXXX should try port 0x92 here
+
+.fail:	push si
+	mov si, .str_fail
+	call printstr
+	pop si
+
+.success:
+	push si
+	mov si, .str_success
+	call printstr
+	pop si
+	ret
+.str_fail: db 'Being confused you have difficulties controlling your '
+	   db 'actions.',0xd,0xa,0
+.str_success: db 'You succeed in forcing the lock.',0xd,0xa,0
+	; end enablea20
+
+
+
+	;
+	; enablea20_kbc - attempt to enable the a20 gate via the
+	; keyboard controller. (the standard way)
+	;
+enablea20_kbc:	
+	push ax
 	; send ``read output port'' to the kbd control register
 	mov al, 0xd0
 	out 0x64, al
@@ -484,11 +521,59 @@ enablea20:
 	mov al, 0xdf
 	out 0x60, al
 
+	pop ax
 	ret
-	; end enablea20
+	; end enablea20_kbc
 
 
-	
+	;
+	; enablea20_bios - attempt to use the bios to enable gate a20
+	;
+enablea20_bios:
+	push ax
+
+	mov ax, 0x2401
+	int 0x15
+	; we don't actually care about the return value, since we don't
+	; trust that lying bastard bios anyway.
+
+	pop ax
+	ret
+	; end enablea20_bios
+
+
+	;
+	; testa20 - determine whether the a20 gate is on.
+	; destroys the vector for int 0
+	;
+testa20:
+	push ax
+	push ds
+	push es
+
+	mov ax, 0
+	mov ds, ax
+	mov ax, 0xffff
+	mov es, ax
+
+	mov al, [ds:0]
+	mov ah, al
+	mov al, [es:0x10]
+
+	mov al, ah
+	add al, 0x42
+	mov [es:0x10], al
+
+	mov al, [es:0x10]
+	cmp al, [ds:0]
+
+	pop es
+	pop ds
+	pop ax
+	ret
+	; end testa20
+
+
 	;
 	; getline - get a line into [ES:DI]
 	; Takes the line buffer in ES:DI, the max string length in CX
@@ -513,7 +598,6 @@ getline:
 	ret
 	; end getline
 
-	
 
 	;
 	; Additional data
@@ -527,7 +611,7 @@ hextoascii:	db '0123456789abcdef'
 helptext:	db 0xd,0xa,'stage-b, Julian Squires <tek@wiw.org> / 2001'
 	        db 0xd,0xa,'Commands: boot mem help',0xd,0xa,0
 
-	times 1024-($-$$) db 0
+	times 1536-($-$$) db 0
 
 	section .bss
 
@@ -536,6 +620,8 @@ drivecurcx	resw 1
 drivemaxcx	resw 1
 drivecurhead	resb 1
 drivemaxheads	resb 1
+
+kernloadpos	resd 1
 
 gdt		resb 0x30
 

@@ -11,7 +11,7 @@ stackloc   equ 0x2000
 ; seg:offs into which we load stage-b (the 32KB mark)
 stagebpos  equ 0x8000
 ; how many 512 blocks is stageb
-stageblen equ 2
+stageblen equ 3
 
 entry:  ; fix segments
 	jmp 0000:.entseg
